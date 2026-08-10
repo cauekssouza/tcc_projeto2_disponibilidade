@@ -1,77 +1,112 @@
 <?php
+
+declare(strict_types=1);
+
 session_start();
 
-require '../assets/includes/auth_functions.php';
+require_once '../assets/includes/auth_functions.php';
+
 check_logged_in();
 
-// Regenera o ID da sessão para evitar fixation
-session_regenerate_id(true);
-
-// Sanitiza o email da sessão (caso exista)
-$userEmail = isset($_SESSION['email']) 
-    ? filter_var($_SESSION['email'], FILTER_SANITIZE_EMAIL) 
-    : null;
-
-// Remove cookie da sessão, se existir
+/*
+ * Remove o cookie da sessão.
+ */
 if (isset($_COOKIE[session_name()])) {
-    setcookie(session_name(), '', [
-        'expires' => time() - 3600,
-        'path'    => '/',
-        'secure'  => true,
-        'httponly'=> true,
-        'samesite'=> 'Strict'
-    ]);
+    setcookie(
+        session_name(),
+        '',
+        [
+            'expires'  => time() - 3600,
+            'path'     => '/',
+            'secure'   => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'httponly' => true,
+            'samesite' => 'Lax'
+        ]
+    );
 }
 
-// Remove cookie "rememberme" e token no banco
+/*
+ * Se existir o cookie "rememberme", invalida também
+ * o token persistente no banco de dados.
+ */
 if (isset($_COOKIE['rememberme'])) {
 
-    // Apaga cookie com atributos seguros
-    setcookie('rememberme', '', [
-        'expires' => time() - 3600,
-        'path'    => '/',
-        'secure'  => true,
-        'httponly'=> true,
-        'samesite'=> 'Strict'
-    ]);
+    setcookie(
+        'rememberme',
+        '',
+        [
+            'expires'  => time() - 3600,
+            'path'     => '/',
+            'secure'   => isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+            'httponly' => true,
+            'samesite' => 'Lax'
+        ]
+    );
 
-    // Só prossegue se o email sanitizado for válido
-    if ($userEmail) {
+    /*
+     * Nunca confiar diretamente em valores da sessão.
+     * A sessão também pode conter dados originalmente provenientes
+     * de entrada externa.
+     */
+    $email = $_SESSION['email'] ?? null;
 
-        require '../assets/setup/db.inc.php';
+    if (
+        is_string($email)
+        && strlen($email) <= 254
+        && filter_var($email, FILTER_VALIDATE_EMAIL) !== false
+    ) {
+        require_once '../assets/setup/db.inc.php';
 
-        $sql = "DELETE FROM auth_tokens 
-                WHERE user_email = ? 
-                AND auth_type = 'remember_me'";
+        /*
+         * CWE-89:
+         * Nenhum dado dinâmico é concatenado na instrução SQL.
+         */
+        $sql = "
+            DELETE FROM auth_tokens
+            WHERE user_email = ?
+              AND auth_type = 'remember_me'
+        ";
 
-        $stmt = mysqli_stmt_init($conn);
+        $stmt = mysqli_prepare($conn, $sql);
 
-        if (mysqli_stmt_prepare($stmt, $sql)) {
+        if ($stmt !== false) {
 
-            mysqli_stmt_bind_param($stmt, "s", $userEmail);
+            /*
+             * Tipagem explícita:
+             *
+             * s = string
+             *
+             * $email é garantidamente string devido à validação acima.
+             */
+            mysqli_stmt_bind_param($stmt, 's', $email);
 
-            if (mysqli_stmt_execute($stmt)) {
+            mysqli_stmt_execute($stmt);
 
-                // Atualiza estado da sessão com segurança
-                if (isset($_SESSION['auth'])) {
-                    $_SESSION['auth'] = 'verified';
-                }
-
-            } else {
-                // Log de erro (nunca exibir ao usuário)
-                error_log("Erro ao executar DELETE em auth_tokens: " . mysqli_error($conn));
-            }
-
-        } else {
-            error_log("Erro ao preparar statement: " . mysqli_error($conn));
+            mysqli_stmt_close($stmt);
         }
+    }
+
+    if (isset($_SESSION['auth'])) {
+        $_SESSION['auth'] = 'verified';
     }
 }
 
-// Limpa e destrói a sessão
+/*
+ * Limpa todos os dados da sessão antes de destruí-la.
+ */
+$_SESSION = [];
+
 session_unset();
 session_destroy();
 
-// Redireciona com header seguro
-header("Location: ../login/");
+/*
+ * Não há conteúdo HTML sendo renderizado neste script.
+ * Portanto, htmlspecialchars() não deve ser aplicado artificialmente.
+ *
+ * Caso algum valor dinâmico venha a ser renderizado em HTML:
+ *
+ * echo htmlspecialchars($valor, ENT_QUOTES, 'UTF-8');
+ */
+
+header('Location: ../login/');
 exit;
