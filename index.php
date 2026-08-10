@@ -5,25 +5,31 @@ session_start();
 require '../assets/includes/auth_functions.php';
 check_logged_in();
 
-// Função utilitária para remover cookies com segurança
-function clear_cookie(string $name): void {
+/**
+ * Função utilitária para remover cookies com segurança
+ */
+function delete_cookie(string $name): void {
     if (isset($_COOKIE[$name])) {
-        setcookie($name, '', time() - 3600, '/', '', false, true);
+        setcookie($name, '', time() - 3600, '/');
     }
 }
 
-// Remove cookies de sessão e remember-me
-clear_cookie(session_name());
-clear_cookie('rememberme');
+/**
+ * Remove o cookie de sessão, se existir
+ */
+delete_cookie(session_name());
 
-// Se o usuário estava usando "remember me", remove o token do banco
+/**
+ * Remove o cookie "rememberme" e o token correspondente no banco
+ */
 if (isset($_COOKIE['rememberme'])) {
+
+    delete_cookie('rememberme');
 
     require '../assets/setup/db.inc.php';
 
     $sql = "DELETE FROM auth_tokens 
-            WHERE user_email = ? 
-              AND auth_type = 'remember_me'";
+            WHERE user_email = ? AND auth_type = 'remember_me'";
 
     $stmt = mysqli_prepare($conn, $sql);
 
@@ -32,16 +38,20 @@ if (isset($_COOKIE['rememberme'])) {
         mysqli_stmt_execute($stmt);
     }
 
-    // Mantém o estado de autenticação consistente
+    // Mantém coerência com o fluxo de autenticação
     if (isset($_SESSION['auth'])) {
         $_SESSION['auth'] = 'verified';
     }
 }
 
-// Finaliza sessão
+/**
+ * Finaliza a sessão completamente
+ */
 session_unset();
 session_destroy();
 
-// Redireciona para login
+/**
+ * Redireciona para a página de login
+ */
 header("Location: ../login/");
 exit();
