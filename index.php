@@ -4,40 +4,45 @@ session_start();
 require '../assets/includes/auth_functions.php';
 check_logged_in();
 
-// Função segura para remover cookies
-function remove_cookie(string $name): void {
-    if (isset($_COOKIE[$name])) {
-        setcookie(
-            $name,
-            '',
-            [
-                'expires'  => time() - 3600,
-                'path'     => '/',
-                'secure'   => true,      // exige HTTPS
-                'httponly' => true,      // evita acesso via JS
-                'samesite' => 'Strict'
-            ]
-        );
-    }
-}
+// Regenera o ID da sessão para evitar fixation
+session_regenerate_id(true);
 
-// Remove cookie de sessão se existir
-remove_cookie(session_name());
+// Sanitiza o email da sessão (caso exista)
+$userEmail = isset($_SESSION['email']) 
+    ? filter_var($_SESSION['email'], FILTER_SANITIZE_EMAIL) 
+    : null;
+
+// Remove cookie da sessão, se existir
+if (isset($_COOKIE[session_name()])) {
+    setcookie(session_name(), '', [
+        'expires' => time() - 3600,
+        'path'    => '/',
+        'secure'  => true,
+        'httponly'=> true,
+        'samesite'=> 'Strict'
+    ]);
+}
 
 // Remove cookie "rememberme" e token no banco
 if (isset($_COOKIE['rememberme'])) {
 
-    remove_cookie('rememberme');
+    // Apaga cookie com atributos seguros
+    setcookie('rememberme', '', [
+        'expires' => time() - 3600,
+        'path'    => '/',
+        'secure'  => true,
+        'httponly'=> true,
+        'samesite'=> 'Strict'
+    ]);
 
-    // Sanitiza email da sessão antes de usar
-    $userEmail = filter_var($_SESSION['email'] ?? '', FILTER_SANITIZE_EMAIL);
-
-    if (!empty($userEmail)) {
+    // Só prossegue se o email sanitizado for válido
+    if ($userEmail) {
 
         require '../assets/setup/db.inc.php';
 
         $sql = "DELETE FROM auth_tokens 
-                WHERE user_email = ? AND auth_type = 'remember_me'";
+                WHERE user_email = ? 
+                AND auth_type = 'remember_me'";
 
         $stmt = mysqli_stmt_init($conn);
 
@@ -45,18 +50,25 @@ if (isset($_COOKIE['rememberme'])) {
 
             mysqli_stmt_bind_param($stmt, "s", $userEmail);
 
-            mysqli_stmt_execute($stmt);
+            if (mysqli_stmt_execute($stmt)) {
 
-            // Atualiza estado da sessão com segurança
-            if (isset($_SESSION['auth'])) {
-                $_SESSION['auth'] = 'verified';
+                // Atualiza estado da sessão com segurança
+                if (isset($_SESSION['auth'])) {
+                    $_SESSION['auth'] = 'verified';
+                }
+
+            } else {
+                // Log de erro (nunca exibir ao usuário)
+                error_log("Erro ao executar DELETE em auth_tokens: " . mysqli_error($conn));
             }
+
+        } else {
+            error_log("Erro ao preparar statement: " . mysqli_error($conn));
         }
     }
 }
 
 // Limpa e destrói a sessão
-$_SESSION = [];
 session_unset();
 session_destroy();
 
