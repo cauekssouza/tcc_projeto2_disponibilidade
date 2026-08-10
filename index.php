@@ -4,78 +4,62 @@ session_start();
 require '../assets/includes/auth_functions.php';
 check_logged_in();
 
-// Regenera o ID da sessão para evitar fixation
-session_regenerate_id(true);
-
-/**
- * Sanitização de dados vindos da sessão e cookies
- */
-$userEmail = filter_var($_SESSION['email'] ?? '', FILTER_SANITIZE_EMAIL);
-$sessionCookie = filter_var($_COOKIE[session_name()] ?? '', FILTER_SANITIZE_STRING);
-$rememberCookie = filter_var($_COOKIE['rememberme'] ?? '', FILTER_SANITIZE_STRING);
-
-/**
- * Remove cookie de sessão, se existir
- */
-if (!empty($sessionCookie)) {
-    setcookie(session_name(), '', [
-        'expires'  => time() - 7000000,
-        'path'     => '/',
-        'secure'   => true,
-        'httponly' => true,
-        'samesite' => 'Strict'
-    ]);
+// Função segura para remover cookies
+function remove_cookie(string $name): void {
+    if (isset($_COOKIE[$name])) {
+        setcookie(
+            $name,
+            '',
+            [
+                'expires'  => time() - 3600,
+                'path'     => '/',
+                'secure'   => true,      // exige HTTPS
+                'httponly' => true,      // evita acesso via JS
+                'samesite' => 'Strict'
+            ]
+        );
+    }
 }
 
-/**
- * Remove cookie de remember me e apaga token no banco
- */
-if (!empty($rememberCookie)) {
+// Remove cookie de sessão se existir
+remove_cookie(session_name());
 
-    setcookie('rememberme', '', [
-        'expires'  => time() - 7000000,
-        'path'     => '/',
-        'secure'   => true,
-        'httponly' => true,
-        'samesite' => 'Strict'
-    ]);
+// Remove cookie "rememberme" e token no banco
+if (isset($_COOKIE['rememberme'])) {
 
-    require '../assets/setup/db.inc.php';
+    remove_cookie('rememberme');
 
-    $sql = "DELETE FROM auth_tokens 
-            WHERE user_email = ? AND auth_type = 'remember_me'";
+    // Sanitiza email da sessão antes de usar
+    $userEmail = filter_var($_SESSION['email'] ?? '', FILTER_SANITIZE_EMAIL);
 
-    if ($stmt = mysqli_prepare($conn, $sql)) {
-        mysqli_stmt_bind_param($stmt, "s", $userEmail);
-        mysqli_stmt_execute($stmt);
-        mysqli_stmt_close($stmt);
+    if (!empty($userEmail)) {
 
-        if (isset($_SESSION['auth'])) {
-            $_SESSION['auth'] = 'verified';
+        require '../assets/setup/db.inc.php';
+
+        $sql = "DELETE FROM auth_tokens 
+                WHERE user_email = ? AND auth_type = 'remember_me'";
+
+        $stmt = mysqli_stmt_init($conn);
+
+        if (mysqli_stmt_prepare($stmt, $sql)) {
+
+            mysqli_stmt_bind_param($stmt, "s", $userEmail);
+
+            mysqli_stmt_execute($stmt);
+
+            // Atualiza estado da sessão com segurança
+            if (isset($_SESSION['auth'])) {
+                $_SESSION['auth'] = 'verified';
+            }
         }
     }
 }
 
-/**
- * Finaliza sessão com segurança
- */
+// Limpa e destrói a sessão
 $_SESSION = [];
-if (ini_get("session.use_cookies")) {
-    $params = session_get_cookie_params();
-    setcookie(session_name(), '', [
-        'expires'  => time() - 42000,
-        'path'     => $params["path"],
-        'domain'   => $params["domain"],
-        'secure'   => $params["secure"],
-        'httponly' => $params["httponly"],
-        'samesite' => 'Strict'
-    ]);
-}
-
+session_unset();
 session_destroy();
 
-/**
- * Redireciona para login
- */
+// Redireciona com header seguro
 header("Location: ../login/");
 exit;
