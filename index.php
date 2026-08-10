@@ -8,12 +8,26 @@ require_once '../assets/includes/auth_functions.php';
 
 check_logged_in();
 
+/**
+ * Codificação segura para qualquer dado que futuramente
+ * seja enviado para um contexto HTML.
+ */
+function escapeHtml(string $value): string
+{
+    return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
+}
+
 /*
  * Remove o cookie da sessão.
+ *
+ * O nome do cookie vem da configuração interna do PHP,
+ * não de uma entrada controlada diretamente pelo usuário.
  */
-if (isset($_COOKIE[session_name()])) {
+$sessionCookieName = session_name();
+
+if (isset($_COOKIE[$sessionCookieName])) {
     setcookie(
-        session_name(),
+        $sessionCookieName,
         '',
         [
             'expires'  => time() - 3600,
@@ -26,8 +40,8 @@ if (isset($_COOKIE[session_name()])) {
 }
 
 /*
- * Se existir o cookie "rememberme", invalida também
- * o token persistente no banco de dados.
+ * Caso exista um token "remember me", remove-o também
+ * do navegador e do banco de dados.
  */
 if (isset($_COOKIE['rememberme'])) {
 
@@ -44,9 +58,12 @@ if (isset($_COOKIE['rememberme'])) {
     );
 
     /*
-     * Nunca confiar diretamente em valores da sessão.
-     * A sessão também pode conter dados originalmente provenientes
-     * de entrada externa.
+     * A aplicação espera que $_SESSION['email'] contenha
+     * exclusivamente um endereço de e-mail válido.
+     *
+     * Não confiamos no conteúdo da sessão sem validação,
+     * pois sessões também podem ser corrompidas ou
+     * manipuladas por falhas em outras partes da aplicação.
      */
     $email = $_SESSION['email'] ?? null;
 
@@ -55,58 +72,77 @@ if (isset($_COOKIE['rememberme'])) {
         && strlen($email) <= 254
         && filter_var($email, FILTER_VALIDATE_EMAIL) !== false
     ) {
-        require_once '../assets/setup/db.inc.php';
+
+        require '../assets/setup/db.inc.php';
 
         /*
-         * CWE-89:
-         * Nenhum dado dinâmico é concatenado na instrução SQL.
+         * O valor do e-mail e o tipo de autenticação são
+         * enviados ao banco exclusivamente como parâmetros.
+         *
+         * Nenhum dado variável é concatenado na instrução SQL.
          */
-        $sql = "
+        $sql = '
             DELETE FROM auth_tokens
             WHERE user_email = ?
-              AND auth_type = 'remember_me'
-        ";
+              AND auth_type = ?
+        ';
 
-        $stmt = mysqli_prepare($conn, $sql);
+        $stmt = mysqli_stmt_init($conn);
 
-        if ($stmt !== false) {
+        if ($stmt === false) {
+            error_log('Falha ao inicializar Prepared Statement.');
+        } elseif (!mysqli_stmt_prepare($stmt, $sql)) {
+            error_log('Falha ao preparar exclusão de auth_tokens.');
+            mysqli_stmt_close($stmt);
+        } else {
+
+            $authType = 'remember_me';
 
             /*
              * Tipagem explícita:
              *
-             * s = string
-             *
-             * $email é garantidamente string devido à validação acima.
+             * s = string -> $email
+             * s = string -> $authType
              */
-            mysqli_stmt_bind_param($stmt, 's', $email);
-
-            mysqli_stmt_execute($stmt);
+            if (!mysqli_stmt_bind_param(
+                $stmt,
+                'ss',
+                $email,
+                $authType
+            )) {
+                error_log('Falha no bind de parâmetros.');
+            } elseif (!mysqli_stmt_execute($stmt)) {
+                error_log('Falha ao excluir token remember_me.');
+            }
 
             mysqli_stmt_close($stmt);
         }
-    }
-
-    if (isset($_SESSION['auth'])) {
-        $_SESSION['auth'] = 'verified';
+    } else {
+        /*
+         * Não utilizar um valor de sessão inválido em uma
+         * operação de banco.
+         *
+         * Evita também revelar o conteúdo do e-mail em logs.
+         */
+        error_log(
+            'Logout executado com e-mail de sessão ausente ou inválido.'
+        );
     }
 }
 
 /*
- * Limpa todos os dados da sessão antes de destruí-la.
+ * Não há necessidade de alterar $_SESSION['auth'] para
+ * "verified" imediatamente antes de destruir a sessão.
+ *
+ * Isso não produz efeito persistente e foi removido para
+ * reduzir estados desnecessários.
  */
-$_SESSION = [];
-
 session_unset();
 session_destroy();
 
 /*
- * Não há conteúdo HTML sendo renderizado neste script.
- * Portanto, htmlspecialchars() não deve ser aplicado artificialmente.
- *
- * Caso algum valor dinâmico venha a ser renderizado em HTML:
- *
- * echo htmlspecialchars($valor, ENT_QUOTES, 'UTF-8');
+ * URL estática: nenhum dado do usuário é incorporado
+ * ao cabeçalho Location.
  */
-
 header('Location: ../login/');
 exit;
